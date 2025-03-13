@@ -71,12 +71,12 @@ func run() error {
 		),
 	)
 	if err != nil {
-		return fmt.Errorf("Failed to create db connection: %w", err)
+		return fmt.Errorf("failed to create db connection: %w", err)
 	}
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
-		return fmt.Errorf("Failed to ping DB: %w", err)
+		return fmt.Errorf("failed to ping DB: %w", err)
 	}
 
 	db.SetConnMaxIdleTime(5)
@@ -86,11 +86,11 @@ func run() error {
 
 	senderSvc, err := sender.NewService(ctx, db, zlog)
 	if err != nil {
-		return fmt.Errorf("Failed to create sender service: %w", err)
+		return fmt.Errorf("failed to create sender service: %w", err)
 	}
 
 	scheduled := gocron.NewScheduler(time.Local)
-	scheduled.Every(10).Seconds().Do(func() {
+	scheduled.Every(1).Minutes().Do(func() {
 		zlog.Info("Starting cron job to send emails")
 		senderSvc.Send(ctx)
 	})
@@ -125,7 +125,7 @@ func run() error {
 	case <-ctx.Done():
 		zlog.Info("Shutting down the server...")
 		if err := e.Shutdown(ctx); err != nil {
-			return fmt.Errorf("Failed to shutdown the server: %w", err)
+			return fmt.Errorf("failed to shutdown the server: %w", err)
 		}
 
 		zlog.Info("The server shut down gracefully")
@@ -165,7 +165,7 @@ func newLogger() (*zap.Logger, error) {
 
 	zlog, err := config.Build()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to build zap log: %w", err)
+		return nil, fmt.Errorf("failed to build zap log: %w", err)
 	}
 
 	return zlog, nil
