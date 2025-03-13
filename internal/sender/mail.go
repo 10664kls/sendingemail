@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -14,6 +15,8 @@ import (
 )
 
 type Service struct {
+	mu sync.Mutex
+
 	db   *sql.DB
 	zlog *zap.Logger
 }
@@ -26,12 +29,31 @@ func NewService(_ context.Context, db *sql.DB, zlog *zap.Logger) (*Service, erro
 	}, nil
 }
 
+func (s *Service) ListMessages(ctx context.Context) ([]*Message, error) {
+	zlog := s.zlog.With(
+		zap.String("service", "sender"),
+		zap.String("method", "ListMessages"),
+	)
+
+	zlog.Info("starting to list messages")
+
+	messages, err := listMailMessages(ctx, s.db)
+	if err != nil {
+		zlog.Error("failed to list mail messages", zap.Error(err))
+		return nil, err
+	}
+	return messages, nil
+}
+
 // Send will be collect an unsent email from wise and
 // then send all that to registered email address, this method will
 // be use by Cronjob.
 func (s *Service) Send(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	zlog := s.zlog.With(
-		zap.String("service", "mail"),
+		zap.String("service", "sender"),
 		zap.String("method", "Send"),
 	)
 
@@ -48,22 +70,25 @@ func (s *Service) Send(ctx context.Context) error {
 
 	messages := make([]*mail.Message, 0, len(rawsMessages))
 	for _, msg := range rawsMessages {
+
 		m := mail.NewMessage()
 		m.SetHeader("From", os.Getenv("MAIL_FROM"))
-		m.SetHeader("To", strings.Join(msg.ToAddresses, ","))
-		m.SetHeader("Bcc", strings.Join(msg.BCCAddresses, ","))
+		m.SetHeader("To", msg.ToAddresses...)
+		m.SetHeader("CC", msg.BCCAddresses...)
 		m.SetHeader("Subject", msg.Subject)
-		m.SetBody("text/html", `<html><body>`+msg.Content+`</body></html>`)
+		m.SetBody("text/html", `<html><body style="font-family: Saysettha OT;">`+msg.Content+`</body></html>`)
 
 		messages = append(messages, m)
+
 	}
 
 	dialer := mail.NewDialer(
 		os.Getenv("SMTP_HOST"),
-		578,
+		587,
 		os.Getenv("SMTP_USERNAME"),
 		os.Getenv("SMTP_PASSWORD"),
 	)
+
 	if err := dialer.DialAndSend(messages...); err != nil {
 		zlog.Error("failed to send emails", zap.Error(err))
 		return err
@@ -106,7 +131,7 @@ func listMailMessages(ctx context.Context, db *sql.DB) ([]*Message, error) {
 	}
 
 	q, args := sq.Select(
-		"TWID",
+		"TOP 100 TWID",
 		"Txnno",
 		"Ruleid",
 		"txtdate",
@@ -120,10 +145,14 @@ func listMailMessages(ctx context.Context, db *sql.DB) ([]*Message, error) {
 	).
 		From("dbo.tb_getEmailWiseSend").
 		PlaceholderFormat(sq.AtP).
-		Where(sq.Eq{
-			"rectype": "ADD",
-			"txtdate": time.Now().Format("2006-01-02"),
-		}).
+		Where(
+			sq.Eq{
+				"rectype": "ADD",
+				"txtdate": time.Now().Format("2006-01-02"),
+			},
+			sq.NotEq{
+				"toaddress": nil,
+			}).
 		OrderBy("TWID ASC").
 		MustSql()
 
@@ -136,7 +165,7 @@ func listMailMessages(ctx context.Context, db *sql.DB) ([]*Message, error) {
 	ms := make([]*Message, 0)
 	for rows.Next() {
 		var m Message
-		var rawToAddress, rowBccAddress string
+		var rawToAddress, rowBccAddress sql.NullString
 		if err := rows.Scan(
 			&m.ID,
 			&m.TxnNo,
@@ -153,15 +182,21 @@ func listMailMessages(ctx context.Context, db *sql.DB) ([]*Message, error) {
 			return nil, fmt.Errorf("failed to scan tb_getEmailWiseSend: %w", err)
 		}
 
-		toAddresses := strings.FieldsFunc(rawToAddress, func(r rune) bool {
-			return r == ';'
-		})
-		bccAddresses := strings.FieldsFunc(rowBccAddress, func(r rune) bool {
-			return r == ';'
-		})
+		if rawToAddress.Valid {
+			toAddresses := strings.FieldsFunc(rawToAddress.String, func(r rune) bool {
+				return r == ';'
+			})
+			m.ToAddresses = toAddresses
+		}
 
-		m.ToAddresses = toAddresses
-		m.BCCAddresses = bccAddresses
+		if rowBccAddress.Valid {
+			bccAddresses := strings.FieldsFunc(rowBccAddress.String, func(r rune) bool {
+				return r == ';'
+			})
+			m.BCCAddresses = bccAddresses
+
+		}
+
 		ms = append(ms, &m)
 	}
 	if err := rows.Err(); err != nil {
