@@ -70,16 +70,20 @@ func (s *Service) Send(ctx context.Context) error {
 
 	messages := make([]*mail.Message, 0, len(rawsMessages))
 	for _, msg := range rawsMessages {
+		if len(msg.ToAddresses) == 0 {
+			continue
+		}
 
 		m := mail.NewMessage()
 		m.SetHeader("From", os.Getenv("MAIL_FROM"))
 		m.SetHeader("To", msg.ToAddresses...)
-		m.SetHeader("CC", msg.BCCAddresses...)
+		if len(msg.BCCAddresses) > 0 {
+			m.SetHeader("CC", msg.BCCAddresses...)
+		}
 		m.SetHeader("Subject", msg.Subject)
 		m.SetBody("text/html", `<html><body style="font-family: Saysettha OT;">`+msg.Content+`</body></html>`)
 
 		messages = append(messages, m)
-
 	}
 
 	dialer := mail.NewDialer(
